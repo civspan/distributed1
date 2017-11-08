@@ -17,10 +17,9 @@ from threading import  Thread # Thread Management
 #------------------------------------------------------------------------------------------------------
 
 # Global variables for HTML templates
-board_frontpage_footer_template = "/home/honk/skola/distributed1/skeleton/server/board_frontpage_footer_template.html"
-board_frontpage_header_template = "/home/honk/skola/distributed1/skeleton/server/board_frontpage_header_template.html"
-boardcontents_template = "/home/honk/skola/distributed1/skeleton/server/boardcontents_template.html"
-entry_template = "/home/honk/skola/distributed1/skeleton/server/entry_template.html"
+board_frontpage_footer_template = "server/board_frontpage_footer_template.html"
+board_frontpage_header_template = "server/board_frontpage_header_template.html"
+boardcontents_template = "server/boardcontents_template.html"
 
 #------------------------------------------------------------------------------------------------------
 # Static variables definitions
@@ -159,17 +158,30 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
 		# We should do some real HTML here
 		html_reponse = "<html><head><title>Basic Skeleton</title></head><body>This is the basic HTML content when receiving a GET</body></html>"
                 #In practice, go over the entries list, 
-		#produce the boardcontents part, 
+				#produce the boardcontents part, 
                 #then construct the full page by combining all the parts ...
                 files = [board_frontpage_header_template, boardcontents_template, board_frontpage_footer_template ]	
-               # files = ['/home/honk/skola/distributed1/skeleton/server/tst.html']
                 html_page = ""
-                #with open(/home/honk/skola/distributed1/skeleton/server/tst.html, w) as outfile:
                 for a_file in files:
                         with open(a_file) as html_file:
-                                #outfile.write(html_file.read())
-                                html_page = html_page + html_file.read()		
+                                html_page += html_file.read()		
 		self.wfile.write(html_page)
+#        def do_GET_Index(self):
+#                # We set the response status code to 200 (OK)
+#                self.set_HTTP_headers(200)
+#                # We should do some real HTML here
+#                html_response = ""
+#                html_files = {board_frontpage_header_template,boardcontents_template,entry_template,board_frontpage_footer_template}
+#                for f in html_files:
+#                        html_file = open(f,"r")
+#                        for line in html_file:
+#                                html_response += line
+#                        html_file.close()
+                #In practice, go over the entries list,
+                #produce the boardcontents part,
+                #then construct the full page by combining all the parts ...
+#                self.wfile.write(html_response)
+
 #------------------------------------------------------------------------------------------------------
 	# we might want some other functions
 #------------------------------------------------------------------------------------------------------
