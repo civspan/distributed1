@@ -20,6 +20,9 @@ from threading import  Thread # Thread Management
 board_frontpage_footer_template = "server/board_frontpage_footer_template.html"
 board_frontpage_header_template = "server/board_frontpage_header_template.html"
 boardcontents_template = "server/boardcontents_template.html"
+entry_template = "server/entry_template.html"
+
+entries = {}
 
 #------------------------------------------------------------------------------------------------------
 # Static variables definitions
@@ -75,7 +78,7 @@ class BlackboardServer(HTTPServer):
 		try:
 			# We contact vessel:PORT_NUMBER since we all use the same port
 			# We can set a timeout, after which the connection fails if nothing happened
-			connection = HTTPConnection("%s:%d" % (vessel, PORT_NUMBER), timeout = 30)
+                        connection = HTTPConnection("%s:%d" % (vessel, PORT_NUMBER), timeout = 30)
 			# We only use POST to send data (PUT and DELETE not supported)
 			action_type = "POST"
 			# We send the HTTP request
@@ -156,43 +159,50 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
 		# We set the response status code to 200 (OK)
 		self.set_HTTP_headers(200)
 		# We should do some real HTML here
-		html_reponse = "<html><head><title>Basic Skeleton</title></head><body>This is the basic HTML content when receiving a GET</body></html>"
+		#html_reponse = "<html><head><title>Basic Skeleton</title></head><body>This is the basic HTML content when receiving a GET</body></html>"
                 #In practice, go over the entries list, 
-				#produce the boardcontents part, 
+		#produce the boardcontents part, 
                 #then construct the full page by combining all the parts ...
-                files = [board_frontpage_header_template, boardcontents_template, board_frontpage_footer_template ]	
+                #files = [board_frontpage_header_template, boardcontents_template, board_frontpage_footer_template ]
                 html_page = ""
-                for a_file in files:
-                        with open(a_file) as html_file:
-                                html_page += html_file.read()		
-		self.wfile.write(html_page)
-#        def do_GET_Index(self):
-#                # We set the response status code to 200 (OK)
-#                self.set_HTTP_headers(200)
-#                # We should do some real HTML here
-#                html_response = ""
-#                html_files = {board_frontpage_header_template,boardcontents_template,entry_template,board_frontpage_footer_template}
-#                for f in html_files:
-#                        html_file = open(f,"r")
-#                        for line in html_file:
-#                                html_response += line
-#                        html_file.close()
-                #In practice, go over the entries list,
-                #produce the boardcontents part,
-                #then construct the full page by combining all the parts ...
-#                self.wfile.write(html_response)
+	        with open(board_frontpage_header_template) as html_file:
+                        html_page = html_file.read()
+                html_page2 = ""
+                for entry in entries:
+                        with open(entry_template) as html_file:
+                                tmp = html_file.read()
+                                html_page2 += tmp % ("entries/"+str(entry),entry,entries[entry])
+                       # with open(temp) as html_file:
+                       #         html_page += html_file.read()
+                with open(boardcontents_template) as html_file:
+                        html_page += html_file.read() % ("Entries",html_page2)
+                with open(board_frontpage_footer_template) as html_file:
+                        html_page += html_file.read()
+                self.wfile.write(html_page)
+                #for a_file in files:
+                 #       with open(a_file) as html_file:
+                 #               html_page += html_file.read()
+	#	self.wfile.write(html_reponse)
 
 #------------------------------------------------------------------------------------------------------
-	# we might want some other functions
+# we might want some other functions
 #------------------------------------------------------------------------------------------------------
 #------------------------------------------------------------------------------------------------------
 # Request handling - POST
 #------------------------------------------------------------------------------------------------------
 	def do_POST(self):
-		print("Receiving a POST on %s" % self.path)
+		#print(self.parse_POST_request())
 		# Here, we should check which path was requested and call the right logic based on it
 		# We should also parse the data received
 		# and set the headers for the client
+                if len(entries) == 0:
+                        tmp_entry = self.parse_POST_request()
+                        entries[0] = tmp_entry["entry"][0]
+                        print(entries[0])
+#{'entry': ['sven']}
+
+###################TODO################
+# fixa index > 0 
 
 		# If we want to retransmit what we received to the other vessels
 		retransmit = False # Like this, we will just create infinite loops!
