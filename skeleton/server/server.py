@@ -22,8 +22,6 @@ board_frontpage_header_template = "server/board_frontpage_header_template.html"
 boardcontents_template = "server/boardcontents_template.html"
 entry_template = "server/entry_template.html"
 
-entries = {}
-
 #------------------------------------------------------------------------------------------------------
 # Static variables definitions
 PORT_NUMBER = 80
@@ -51,34 +49,55 @@ class BlackboardServer(HTTPServer):
 	# We add a value received to the store
 	def add_value_to_store(self, value):
 		# We add the value to the store
-		self.store.append(value)
-		pass
+                print("Added value %s with index %d",value,self.current_key+1)
+                self.current_key += 1
+                self.store[self.current_key] = value
+
 #------------------------------------------------------------------------------------------------------
 	# We modify a value received in the store
 	def modify_value_in_store(self,key,value):
 		# we modify a value in the store if it exists
-		self.store[key]=value
-		pass
+                try:
+                        self.store[key]=value
+                except KeyError:
+                        print("Key %d not present when modifying in vessel %d", (key,self.vessel_id))
+
 #------------------------------------------------------------------------------------------------------
 	# We delete a value received from the store
 	def delete_value_in_store(self,key):
 		# we delete a value in the store if it exists
-		del self.store[key]
-		pass
+		try:
+                        del self.store[key]
+                except Exception as e:
+                        print("Error while deleting key %d from vessel %d",(key,self.vessel_id))
+                        print(e)
+
+#------------------------------------------------------------------------------------------------------
+        # Getter for the stored entries
+        def get_store(self):
+                return self.store
+
+#------------------------------------------------------------------------------------------------------
+        #Getter for current index
+        def get_current_key(self):
+                return self.current_key
+
 #------------------------------------------------------------------------------------------------------
 # Contact a specific vessel with a set of variables to transmit to it
-	def contact_vessel(self, vessel_ip, path, action, key, value):
+	def contact_vessel(self, vessel_ip, path, key, value, sender_id):
+                #REMOVED ACTION
 		# the Boolean variable we will return
 		success = False
 		# The variables must be encoded in the URL format, through urllib.urlencode
-		post_content = urlencode({'action': action, 'key': key, 'value': value})
+		post_content = urlencode({key : value, "sender_id" : sender_id})
+                #print post_content
 		# the HTTP header must contain the type of data we are transmitting, here URL encoded
 		headers = {"Content-type": "application/x-www-form-urlencoded"}
 		# We should try to catch errors when contacting the vessel
 		try:
 			# We contact vessel:PORT_NUMBER since we all use the same port
 			# We can set a timeout, after which the connection fails if nothing happened
-                        connection = HTTPConnection("%s:%d" % (vessel, PORT_NUMBER), timeout = 30)
+                        connection = HTTPConnection("%s:%d" % (vessel_ip, PORT_NUMBER), timeout = 30)
 			# We only use POST to send data (PUT and DELETE not supported)
 			action_type = "POST"
 			# We send the HTTP request
@@ -92,7 +111,7 @@ class BlackboardServer(HTTPServer):
 				success = True
 		# We catch every possible exceptions
 		except Exception as e:
-			print "Error while contacting %s" % vessel
+			print "Error while contacting %s" % vessel_ip
 			# printing the error given by Python
 			print(e)
 
@@ -100,14 +119,17 @@ class BlackboardServer(HTTPServer):
 		return success
 #------------------------------------------------------------------------------------------------------
 	# We send a received value to all the other vessels of the system
-	def propagate_value_to_vessels(self, path, action, key, value):
+	def propagate_value_to_vessels(self, path, key, value, sender_id):
+                #REMOVED ACTION
+                #print "Propagating"
 		# We iterate through the vessel list
 		for vessel in self.vessels:
 			# We should not send it to our own IP, or we would create an infinite loop of updates
 			if vessel != ("10.1.0.%s" % self.vessel_id):
 				# A good practice would be to try again if the request failed
 				# Here, we do it only once
-				self.contact_vessel(vessel, path, action, key, value)		
+                                #print "Contacting vessel"
+				self.contact_vessel(vessel, path, key, value, sender_id)		
 #------------------------------------------------------------------------------------------------------
 
 
@@ -168,10 +190,10 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
 	        with open(board_frontpage_header_template) as html_file:
                         html_page = html_file.read()
                 html_page2 = ""
-                for entry in entries:
+                for entry in self.server.get_store():
                         with open(entry_template) as html_file:
                                 tmp = html_file.read()
-                                html_page2 += tmp % ("entries/"+str(entry),entry,entries[entry])
+                                html_page2 += tmp % ("entries/"+str(entry),entry,self.server.get_store()[entry])
                        # with open(temp) as html_file:
                        #         html_page += html_file.read()
                 with open(boardcontents_template) as html_file:
@@ -195,23 +217,26 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
 		# Here, we should check which path was requested and call the right logic based on it
 		# We should also parse the data received
 		# and set the headers for the client
-                if len(entries) == 0:
-                        tmp_entry = self.parse_POST_request()
-                        entries[0] = tmp_entry["entry"][0]
-                        print(entries[0])
+                print self.path
+                action = ""
+                tmp = self.parse_POST_request()
+                print tmp
+                if self.path[0:6] == "/board":
+                        #print("tmp: ",tmp)
+                        self.server.add_value_to_store(tmp["entry"][0])
 #{'entry': ['sven']}
 
-###################TODO################
-# fixa index > 0 
-
 		# If we want to retransmit what we received to the other vessels
-		retransmit = False # Like this, we will just create infinite loops!
-		if retransmit:
+		retransmit = True # Like this, we will just create infinite loops!
+		if not "sender_id" in tmp:
+                        print "Hej"
 			# do_POST send the message only when the function finishes
 			# We must then create threads if we want to do some heavy computation
 			# 
 			# Random content
-			thread = Thread(target=self.server.propagate_value_to_vessels,args=("action", "key", "value") )
+			thread = Thread(target=self.server.propagate_value_to_vessels,args=\
+                                        (self.path,"entry",tmp["entry"][0],self.server.vessel_id ))
+                        #REMOVED ACTION
 			# We kill the process if we kill the server
 			thread.daemon = True
 			# We start the thread
