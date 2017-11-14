@@ -9,11 +9,13 @@
 # We import various libraries
 from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler # Socket specifically designed to handle HTTP requests
 import sys # Retrieve arguments
+import re
 from urlparse import parse_qs # Parse POST data
 from httplib import HTTPConnection # Create a HTTP connection, as a client (for POST requests to the other vessels)
 from urllib import urlencode # Encode POST content into the HTTP header
 from codecs import open # Open a file
 from threading import  Thread # Thread Management
+
 #------------------------------------------------------------------------------------------------------
 
 # Global variables for HTML templates
@@ -49,7 +51,7 @@ class BlackboardServer(HTTPServer):
 	# We add a value received to the store
 	def add_value_to_store(self, value):
 		# We add the value to the store
-                print("Added value %s with index %d",value,self.current_key+1)
+                print("Added value %s with index %d" % (value,self.current_key+1))
                 self.current_key += 1
                 self.store[self.current_key] = value
 
@@ -58,18 +60,20 @@ class BlackboardServer(HTTPServer):
 	def modify_value_in_store(self,key,value):
 		# we modify a value in the store if it exists
                 try:
+                        print("Modified stored value at index %d from %s to %s" % (key,self.store[key],value))
                         self.store[key]=value
                 except KeyError:
-                        print("Key %d not present when modifying in vessel %d", (key,self.vessel_id))
+                        print("Key %d not present when modifying in vessel %d" % (key,self.vessel_id))
 
 #------------------------------------------------------------------------------------------------------
 	# We delete a value received from the store
 	def delete_value_in_store(self,key):
 		# we delete a value in the store if it exists
 		try:
+                        print("Deleted value stored at key [%d] from store" % (key))
                         del self.store[key]
                 except Exception as e:
-                        print("Error while deleting key %d from vessel %d",(key,self.vessel_id))
+                        print("Error while deleting key %d from vessel %d" % (key,self.vessel_id))
                         print(e)
 
 #------------------------------------------------------------------------------------------------------
@@ -84,12 +88,19 @@ class BlackboardServer(HTTPServer):
 
 #------------------------------------------------------------------------------------------------------
 # Contact a specific vessel with a set of variables to transmit to it
-	def contact_vessel(self, vessel_ip, path, key, value, sender_id):
-                #REMOVED ACTION
+	def contact_vessel(self, vessel_ip, path, key, value):
 		# the Boolean variable we will return
 		success = False
-		# The variables must be encoded in the URL format, through urllib.urlencode
-		post_content = urlencode({key : value, "sender_id" : sender_id})
+		# The variables must be encoded in the URL format, through urllib.urlencode.
+                # The variables passed to another vessel depend on the specified path in the function call
+                post_content = ""
+                if "add" in path:
+                        post_content = urlencode({key : value})       
+                elif "delete" in path:
+		        post_content = urlencode({key : value, "delete" : 1})
+                else:
+                        post_content = urlencode({key : value, "delete" : 0})
+                         
                 #print post_content
 		# the HTTP header must contain the type of data we are transmitting, here URL encoded
 		headers = {"Content-type": "application/x-www-form-urlencoded"}
@@ -102,14 +113,14 @@ class BlackboardServer(HTTPServer):
 			action_type = "POST"
 			# We send the HTTP request
 			connection.request(action_type, path, post_content, headers)
-			# We retrieve the response
+                       	# We retrieve the response
 			response = connection.getresponse()
-			# We want to check the status, the body should be empty
+                       	# We want to check the status, the body should be empty
 			status = response.status
-			# If we receive a HTTP 200 - OK
+                       	# If we receive a HTTP 200 - OK
 			if status == 200:
 				success = True
-		# We catch every possible exceptions
+                # We catch every possible exceptions
 		except Exception as e:
 			print "Error while contacting %s" % vessel_ip
 			# printing the error given by Python
@@ -119,17 +130,14 @@ class BlackboardServer(HTTPServer):
 		return success
 #------------------------------------------------------------------------------------------------------
 	# We send a received value to all the other vessels of the system
-	def propagate_value_to_vessels(self, path, key, value, sender_id):
-                #REMOVED ACTION
-                #print "Propagating"
+	def propagate_value_to_vessels(self, path, key, value):
 		# We iterate through the vessel list
 		for vessel in self.vessels:
 			# We should not send it to our own IP, or we would create an infinite loop of updates
 			if vessel != ("10.1.0.%s" % self.vessel_id):
 				# A good practice would be to try again if the request failed
-				# Here, we do it only once
-                                #print "Contacting vessel"
-				self.contact_vessel(vessel, path, key, value, sender_id)		
+				# Here, we do it only once.
+				self.contact_vessel(vessel, path, key, value)		
 #------------------------------------------------------------------------------------------------------
 
 
@@ -164,91 +172,90 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
 		post_data = parse_qs(self.rfile.read(length), keep_blank_values=1)
 		# we return the data
 		return post_data
-#------------------------------------------------------------------------------------------------------	
+#------------------------------------------------------------------------------------------------------ 
 #------------------------------------------------------------------------------------------------------
 # Request handling - GET
+# This function contains the logic executed when this server receives a GET request
+# This function is called AUTOMATICALLY upon reception and is executed as a thread!
 #------------------------------------------------------------------------------------------------------
-	# This function contains the logic executed when this server receives a GET request
-	# This function is called AUTOMATICALLY upon reception and is executed as a thread!
 	def do_GET(self):
 		print("Receiving a GET on path %s" % self.path)
-		# Here, we should check which path was requested and call the right logic based on it
-		self.do_GET_Index()
-#------------------------------------------------------------------------------------------------------
-# GET logic - specific path
-#------------------------------------------------------------------------------------------------------
-	def do_GET_Index(self):
 		# We set the response status code to 200 (OK)
 		self.set_HTTP_headers(200)
-		# We should do some real HTML here
-		#html_reponse = "<html><head><title>Basic Skeleton</title></head><body>This is the basic HTML content when receiving a GET</body></html>"
-                #In practice, go over the entries list, 
-		#produce the boardcontents part, 
-                #then construct the full page by combining all the parts ...
-                #files = [board_frontpage_header_template, boardcontents_template, board_frontpage_footer_template ]
+
+                # Build the complete html document piece by piece
                 html_page = ""
+                # Board header
 	        with open(board_frontpage_header_template) as html_file:
                         html_page = html_file.read()
-                html_page2 = ""
+                # For each entry stored, create a partial html file containing
+                # information about all stored entries
+                html_entries = ""
                 for entry in self.server.get_store():
                         with open(entry_template) as html_file:
                                 tmp = html_file.read()
-                                html_page2 += tmp % ("entries/"+str(entry),entry,self.server.get_store()[entry])
-                       # with open(temp) as html_file:
-                       #         html_page += html_file.read()
+                                html_entries += tmp % ("entries/"+str(entry),entry,self.server.get_store()[entry])
+                # Use the partial file from the for loop above when building upon the html document
                 with open(boardcontents_template) as html_file:
-                        html_page += html_file.read() % ("Entries",html_page2)
+                        html_page += html_file.read() % ("Entries",html_entries)
+                # Board footer
                 with open(board_frontpage_footer_template) as html_file:
                         html_page += html_file.read()
+                # HTML file is completed
                 self.wfile.write(html_page)
-                #for a_file in files:
-                 #       with open(a_file) as html_file:
-                 #               html_page += html_file.read()
-	#	self.wfile.write(html_reponse)
 
-#------------------------------------------------------------------------------------------------------
-# we might want some other functions
-#------------------------------------------------------------------------------------------------------
 #------------------------------------------------------------------------------------------------------
 # Request handling - POST
 #------------------------------------------------------------------------------------------------------
 	def do_POST(self):
-		#print(self.parse_POST_request())
-		# Here, we should check which path was requested and call the right logic based on it
-		# We should also parse the data received
-		# and set the headers for the client
-                print self.path
-                action = ""
-                tmp = self.parse_POST_request()
-                print tmp
-                if self.path[0:6] == "/board":
-                        #print("tmp: ",tmp)
-                        self.server.add_value_to_store(tmp["entry"][0])
-#{'entry': ['sven']}
+                self.set_HTTP_headers(200)
 
-		# If we want to retransmit what we received to the other vessels
-		retransmit = True # Like this, we will just create infinite loops!
-		if not "sender_id" in tmp:
-                        print "Hej"
+                # Parse the post request and store it in a dict
+                post_data = self.parse_POST_request()
+                path = self.path
+
+                # The boolean retransmit is used to specify whether this node should propagate the
+                # post. We check the path in the header to determine whether it should retransmit or
+                # not. After an operation, the path is altered in order to avoid cyclic retransmission.
+                retransmit = True
+                if "receive" in path:
+                        retransmit = False
+                        
+                # The operations are added to the path so that all clients can determine the correct
+                # action for this POST. The path combined with the POST body is used when determining
+                # the action.
+
+                # An entry is stored in post_data as such: {'entry': ['sven']}
+                # The path to add a value to index 0 is: /entries/0
+                if "delete" in post_data: 
+                        #get index (key) of entry from path and cast to int
+                        result =  re.search('[\d]+', path) 
+                        key_string = result.group()
+                        key = int(key_string)
+
+                        # Delete is 0 -> modify data
+                        if post_data['delete'][0] == '0':
+                                path = "/receive/modify/"+key_string
+                                self.server.modify_value_in_store(key,post_data["entry"][0])
+                        # Delete is 1 -> delete data
+                        else:
+                                path = "/receive/delete/"+key_string
+                                self.server.delete_value_in_store(key)
+                else:
+                        path = "/receive/add/"
+                        self.server.add_value_to_store(post_data["entry"][0])
+
+		if retransmit:
 			# do_POST send the message only when the function finishes
 			# We must then create threads if we want to do some heavy computation
 			# 
 			# Random content
 			thread = Thread(target=self.server.propagate_value_to_vessels,args=\
-                                        (self.path,"entry",tmp["entry"][0],self.server.vessel_id ))
-                        #REMOVED ACTION
+                                        (path,"entry",post_data["entry"][0]))
 			# We kill the process if we kill the server
 			thread.daemon = True
 			# We start the thread
 			thread.start()
-#------------------------------------------------------------------------------------------------------
-# POST Logic
-#------------------------------------------------------------------------------------------------------
-	# We might want some functions here as well
-#------------------------------------------------------------------------------------------------------
-
-
-
 
 
 #------------------------------------------------------------------------------------------------------
