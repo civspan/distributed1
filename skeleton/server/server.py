@@ -1,3 +1,4 @@
+
 # coding=utf-8
 #------------------------------------------------------------------------------------------------------
 # TDA596 Labs - Server Skeleton
@@ -10,6 +11,9 @@
 from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler # Socket specifically designed to handle HTTP requests
 import sys # Retrieve arguments
 import re
+from random import randint
+from time import sleep
+import sys
 from urlparse import parse_qs # Parse POST data
 from httplib import HTTPConnection # Create a HTTP connection, as a client (for POST requests to the other vessels)
 from urllib import urlencode # Encode POST content into the HTTP header
@@ -47,6 +51,25 @@ class BlackboardServer(HTTPServer):
 		self.vessel_id = vessel_id
 		# The list of other vessels
 		self.vessels = vessel_list
+                # Number of nodes
+                self.num_vessels = len(vessel_list)
+                # Randomized integer used in leader election
+                self.rand_num = randint(0,self.num_vessels*200)
+                # Next node in a ring topology for leader election
+                self.next_vessel = (vessel_id % self.num_vessels) + 1
+                # List of leader election results
+                self.election_results = []
+                # Set true if this vessel is elected leader
+                self.is_leader = False
+                # Set id of leader after election
+                self.leader_id = -1
+                
+                # Wait for nodes to initialize, then initiate leader election and add own results to election list
+                #sleep(1)                
+                target_ip = "10.1.0.%s" % self.next_vessel
+                self.contact_vessel(target_ip, "/elect_mode/e/", str(self.vessel_id), str(self.rand_num))
+                self.election_results.append( (self.vessel_id, self.rand_num) )
+
 #------------------------------------------------------------------------------------------------------
 	# We add a value received to the store
 	def add_value_to_store(self, value):
@@ -88,7 +111,7 @@ class BlackboardServer(HTTPServer):
 
 #------------------------------------------------------------------------------------------------------
 # Contact a specific vessel with a set of variables to transmit to it
-	def contact_vessel(self, vessel_ip, path, key, value):
+	def contact_vessel(self, vessel_ip, path, key, value):                
 		# the Boolean variable we will return
 		success = False
 		# The variables must be encoded in the URL format, through urllib.urlencode.
@@ -98,8 +121,10 @@ class BlackboardServer(HTTPServer):
                         post_content = urlencode({key : value})       
                 elif "delete" in path:
 		        post_content = urlencode({key : value, "delete" : 1})
-                else:
+                elif "modify" in path:
                         post_content = urlencode({key : value, "delete" : 0})
+                elif "elect" in path:
+                        post_content = urlencode({key : value, "elect_mode" : "e"})
                          
                 #print post_content
 		# the HTTP header must contain the type of data we are transmitting, here URL encoded
@@ -212,13 +237,12 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
 
                 # Parse the post request and store it in a dict
                 post_data = self.parse_POST_request()
-                path = self.path
 
                 # The boolean retransmit is used to specify whether this node should propagate the
                 # post. We check the path in the header to determine whether it should retransmit or
                 # not. After an operation, the path is altered in order to avoid cyclic retransmission.
                 retransmit = True
-                if "receive" in path:
+                if "receive" in self.path:
                         retransmit = False
                         
                 # The operations are added to the path so that all clients can determine the correct
@@ -227,38 +251,60 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
 
                 # An entry is stored in post_data as such: {'entry': ['sven']}
                 # The path to add a value to index 0 is: /entries/0
-                if "delete" in post_data: 
-                        #get index (key) of entry from path and cast to int
-                        result =  re.search('[\d]+', path) 
-                        key_string = result.group()
-                        key = int(key_string)
-
-                        # Delete is 0 -> modify data
-                        if post_data['delete'][0] == '0':
-                                path = "/receive/modify/"+key_string
-                                self.server.modify_value_in_store(key,post_data["entry"][0])
-                        # Delete is 1 -> delete data
-                        else:
-                                path = "/receive/delete/"+key_string
-                                self.server.delete_value_in_store(key)
+                if "delete" in post_data:
+                        self.do_delete_or_modify(post_data)
+                elif "entry" in post_data:
+                        self.do_add(post_data)
+                # If message is a leader election message, append to election list
                 else:
-                        path = "/receive/add/"
-                        self.server.add_value_to_store(post_data["entry"][0])
+                        self.do_election(post_data)
 
-		if retransmit:
-			# do_POST send the message only when the function finishes
-			# We must then create threads if we want to do some heavy computation
-			# 
-			# Random content
-			thread = Thread(target=self.server.propagate_value_to_vessels,args=\
-                                        (path,"entry",post_data["entry"][0]))
-			# We kill the process if we kill the server
-			thread.daemon = True
-			# We start the thread
-			thread.start()
+		if retransmit and self.server.is_leader:
+                        self.do_retransmit(post_data)
 
 
 #------------------------------------------------------------------------------------------------------
+
+        def do_delete_or_modify(self,post_data):
+                #get index (key) of entry from path and cast to int
+                key_string =  re.search('[\d]+', self.path).group()
+                key = int(key_string)
+
+                # Delete is 0 -> modify data
+                if post_data['delete'][0] == '0':
+                        self.path = "/receive/modify/"+key_string
+                        self.server.modify_value_in_store(key,post_data["entry"][0])
+                        # Delete is 1 -> delete data
+                else:
+                        self.path = "/receive/delete/"+key_string
+                        self.server.delete_value_in_store(key)
+
+        def do_add(self,post_data):
+                self.path = "/receive/add/"
+                self.server.add_value_to_store(post_data["entry"][0])
+
+        def do_election(self,post_data):
+                self.path = "/leader_election/"
+                print "YEAH"
+                #post_key = post_data.keys()[0]
+                #self.election_results.append(post_key, post_data[post_key])
+                #if len(self.election_results) < self.num_vessels:
+                #        contact_vessel("10.1.0.%s" % self.vessel_id, self.path, post_key, post_data[post_key])
+                #else:
+                #        print "Leader election done"
+
+        def do_retransmit(self,post_data):
+		# do_POST send the message only when the function finishes
+		# We must then create threads if we want to do some heavy computation
+		# 
+		# Random content
+		thread = Thread(target=self.server.propagate_value_to_vessels,args=\
+                                (self.path,"entry",post_data["entry"][0]))
+		# We kill the process if we kill the server
+		thread.daemon = True
+		# We start the thread
+		thread.start()
+	                
 #------------------------------------------------------------------------------------------------------
 # Execute the code
 if __name__ == '__main__':
@@ -281,10 +327,16 @@ if __name__ == '__main__':
 	# We launch a server
 	server = BlackboardServer(('', PORT_NUMBER), BlackboardRequestHandler, vessel_id, vessel_list)
 	print("Starting the server on port %d" % PORT_NUMBER)
-
+        sleep(1)
 	try:
 		server.serve_forever()
 	except KeyboardInterrupt:
 		server.server_close()
 		print("Stopping Server")
 #------------------------------------------------------------------------------------------------------
+
+
+# Questions of TA's:
+# 1 Do we need "c" message?
+# 2 When do we call sleep?
+#
