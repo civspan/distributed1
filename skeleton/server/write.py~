@@ -1,0 +1,6 @@
+def writer:
+    files = ['/home/honk/skola/distributed1/skeleton/server/tst.hmtl']
+    html_page = ""
+    for a_file in files:
+        with open(a_file) as html_file:
+            html_page = html_page + html_file.read()		

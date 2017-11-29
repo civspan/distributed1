@@ -13,7 +13,6 @@ import sys # Retrieve arguments
 import re
 from random import randint
 from time import sleep
-import sys
 from urlparse import parse_qs # Parse POST data
 from httplib import HTTPConnection # Create a HTTP connection, as a client (for POST requests to the other vessels)
 from urllib import urlencode # Encode POST content into the HTTP header
@@ -40,10 +39,11 @@ PORT_NUMBER = 80
 #------------------------------------------------------------------------------------------------------
 class BlackboardServer(HTTPServer):
 #------------------------------------------------------------------------------------------------------
-	def __init__(self, server_address, handler, node_id, vessel_list):
-	# We call the super init
+	def __init__(self, server_address, handler, vessel_id, vessel_list):
+
+	        # We call the super init
 		HTTPServer.__init__(self,server_address, handler)
-		# we create the dictionary of values
+                # we create the dictionary of values
 		self.store = {}
 		# We keep a variable of the next id to insert
 		self.current_key = -1
@@ -52,23 +52,26 @@ class BlackboardServer(HTTPServer):
 		# The list of other vessels
 		self.vessels = vessel_list
                 # Number of nodes
-                self.num_vessels = len(vessel_list)
-                # Randomized integer used in leader election
-                self.rand_num = randint(0,self.num_vessels*200)
-                # Next node in a ring topology for leader election
-                self.next_vessel = (vessel_id % self.num_vessels) + 1
-                # List of leader election results
-                self.election_results = []
+                self.num_vessels = len(self.vessels)
+                # Current leader at this time in election, initialized to self
+                self.current_leader = (self.vessel_id, randint(0,self.num_vessels*200))
                 # Set true if this vessel is elected leader
                 self.is_leader = False
-                # Set id of leader after election
-                self.leader_id = -1
+                # Create string of next ip for election
+                self.target_ip = "10.1.0.%s" % ((self.vessel_id % self.num_vessels) + 1)
                 
                 # Wait for nodes to initialize, then initiate leader election and add own results to election list
-                #sleep(1)                
-                target_ip = "10.1.0.%s" % self.next_vessel
-                self.contact_vessel(target_ip, "/elect_mode/e/", str(self.vessel_id), str(self.rand_num))
-                self.election_results.append( (self.vessel_id, self.rand_num) )
+                # Run leader election in thread so that the election can be delayed without blocking the server
+                thread = Thread(target=self.init_election,args=[self.target_ip])
+		thread.daemon = True
+		thread.start()
+
+
+#------------------------------------------------------------------------------------------------------
+        def init_election(self, target):
+                sleep(1)
+                print "Init: Vessel %s trying to contact vessel %s" % (self.vessel_id, (self.vessel_id % self.num_vessels) + 1)
+                self.contact_vessel(target, "/leader_election/init/", str(self.vessel_id), str(self.current_leader[1]))
 
 #------------------------------------------------------------------------------------------------------
 	# We add a value received to the store
@@ -100,33 +103,22 @@ class BlackboardServer(HTTPServer):
                         print(e)
 
 #------------------------------------------------------------------------------------------------------
-        # Getter for the stored entries
-        def get_store(self):
-                return self.store
-
-#------------------------------------------------------------------------------------------------------
-        #Getter for current index
-        def get_current_key(self):
-                return self.current_key
-
-#------------------------------------------------------------------------------------------------------
 # Contact a specific vessel with a set of variables to transmit to it
 	def contact_vessel(self, vessel_ip, path, key, value):                
 		# the Boolean variable we will return
 		success = False
 		# The variables must be encoded in the URL format, through urllib.urlencode.
                 # The variables passed to another vessel depend on the specified path in the function call
-                post_content = ""
-                if "add" in path:
-                        post_content = urlencode({key : value})       
-                elif "delete" in path:
+                post_content = ""      
+                if "delete" in path:
 		        post_content = urlencode({key : value, "delete" : 1})
                 elif "modify" in path:
                         post_content = urlencode({key : value, "delete" : 0})
-                elif "elect" in path:
-                        post_content = urlencode({key : value, "elect_mode" : "e"})
-                         
-                #print post_content
+                elif "election" in path:
+                        post_content = urlencode({key : value, "elect" : "e"})
+                else:
+                        post_content = urlencode({key : value})
+
 		# the HTTP header must contain the type of data we are transmitting, here URL encoded
 		headers = {"Content-type": "application/x-www-form-urlencoded"}
 		# We should try to catch errors when contacting the vessel
@@ -168,9 +160,6 @@ class BlackboardServer(HTTPServer):
 
 
 
-
-
-
 #------------------------------------------------------------------------------------------------------
 #------------------------------------------------------------------------------------------------------
 # This class implements the logic when a server receives a GET or POST request
@@ -204,7 +193,7 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
 # This function is called AUTOMATICALLY upon reception and is executed as a thread!
 #------------------------------------------------------------------------------------------------------
 	def do_GET(self):
-		print("Receiving a GET on path %s" % self.path)
+		#print("Receiving a GET on path %s" % self.path)
 		# We set the response status code to 200 (OK)
 		self.set_HTTP_headers(200)
 
@@ -216,10 +205,10 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
                 # For each entry stored, create a partial html file containing
                 # information about all stored entries
                 html_entries = ""
-                for entry in self.server.get_store():
+                for entry in self.server.store:
                         with open(entry_template) as html_file:
                                 tmp = html_file.read()
-                                html_entries += tmp % ("entries/"+str(entry),entry,self.server.get_store()[entry])
+                                html_entries += tmp % ("entries/"+str(entry),entry,self.server.store[entry])
                 # Use the partial file from the for loop above when building upon the html document
                 with open(boardcontents_template) as html_file:
                         html_page += html_file.read() % ("Entries",html_entries)
@@ -237,76 +226,151 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
 
                 # Parse the post request and store it in a dict
                 post_data = self.parse_POST_request()
-
-                # The boolean retransmit is used to specify whether this node should propagate the
-                # post. We check the path in the header to determine whether it should retransmit or
-                # not. After an operation, the path is altered in order to avoid cyclic retransmission.
-                retransmit = True
-                if "receive" in self.path:
-                        retransmit = False
-                        
                 # The operations are added to the path so that all clients can determine the correct
                 # action for this POST. The path combined with the POST body is used when determining
                 # the action.
-
                 # An entry is stored in post_data as such: {'entry': ['sven']}
                 # The path to add a value to index 0 is: /entries/0
-                if "delete" in post_data:
-                        self.do_delete_or_modify(post_data)
-                elif "entry" in post_data:
-                        self.do_add(post_data)
-                # If message is a leader election message, append to election list
-                else:
+                # If message is a leader election message, continue with election
+                if "elect" in post_data:
                         self.do_election(post_data)
-
-		if retransmit and self.server.is_leader:
-                        self.do_retransmit(post_data)
-
+                else:
+                        entry_nr = ""
+                        # Parse entry number from message path
+                        if "delete" in post_data:
+                                entry_nr =  re.search('[\d]+', self.path).group()
+                        # Path is set to a value depending on post_data
+                        self.path = self.change_path(post_data,entry_nr)
+                        # Process message (and propagate if vessel is leader)
+                        if self.server.is_leader:
+                                self.handle_post_data(post_data,entry_nr)
+                                self.propagate(post_data)
+                        # If not leader, check if msg came from leader and either process msg or send to leader
+                        else:
+                                if "from_leader" in self.path:
+                                        self.handle_post_data(post_data,entry_nr)
+                                else:
+                                        self.send_to_leader(post_data)
+                                        
+#------------------------------------------------------------------------------------------------------
+# Selects the correct operation to perform depending on the path
+#------------------------------------------------------------------------------------------------------
+        def handle_post_data(self,post_data,entry_nr):
+                if "delete" in self.path:
+                        self.delete(post_data,entry_nr)
+                elif "modify" in self.path:
+                        self.modify(post_data,entry_nr)
+                elif "entry" in post_data:
+                        self.add(post_data)
 
 #------------------------------------------------------------------------------------------------------
-
-        def do_delete_or_modify(self,post_data):
-                #get index (key) of entry from path and cast to int
-                key_string =  re.search('[\d]+', self.path).group()
-                key = int(key_string)
-
-                # Delete is 0 -> modify data
-                if post_data['delete'][0] == '0':
-                        self.path = "/receive/modify/"+key_string
-                        self.server.modify_value_in_store(key,post_data["entry"][0])
-                        # Delete is 1 -> delete data
-                else:
-                        self.path = "/receive/delete/"+key_string
-                        self.server.delete_value_in_store(key)
-
-        def do_add(self,post_data):
-                self.path = "/receive/add/"
+# Delete entry
+#------------------------------------------------------------------------------------------------------
+        def delete(self,post_data,entry_nr):
+                self.server.delete_value_in_store(int(entry_nr))
+                
+#------------------------------------------------------------------------------------------------------
+# Modify entry
+#------------------------------------------------------------------------------------------------------
+        def modify(self,post_data,entry_nr):
+                self.server.modify_value_in_store(int(entry_nr),post_data["entry"][0])
+                        
+#------------------------------------------------------------------------------------------------------
+# Add entry
+#------------------------------------------------------------------------------------------------------
+        def add(self,post_data):
                 self.server.add_value_to_store(post_data["entry"][0])
 
+#------------------------------------------------------------------------------------------------------
+# Perform leader election in a ring. Nodes send their randomly generated integer (rank) to the next
+# node in the ring. When a node receives a leader election message, it compares the received rank
+# to the highest rank (received so far), and if the new rank is higher, it sends that value forward.
+# When the node that had the highest initial rank receives its rank, it knows that the value has
+# propagated throughout the ring, and it has won the election. Thus all nodes have the same leader.
+# We purposely omitted the "c" message, as it does not serve any purpose (thus far) in our implementation.
+# For further discussion on this topic, we refer to our report.
+#------------------------------------------------------------------------------------------------------
         def do_election(self,post_data):
                 self.path = "/leader_election/"
-                print "YEAH"
-                #post_key = post_data.keys()[0]
-                #self.election_results.append(post_key, post_data[post_key])
-                #if len(self.election_results) < self.num_vessels:
-                #        contact_vessel("10.1.0.%s" % self.vessel_id, self.path, post_key, post_data[post_key])
-                #else:
-                #        print "Leader election done"
+                keys = post_data.keys()
+                new_id = keys[0]
+                # Since dicts are unordered, pick the correct key
+                if new_id == 'elect':
+                        new_id = keys[1] 
+                new_rank = post_data[new_id][0]
+                forward_new_leader = False
 
-        def do_retransmit(self,post_data):
-		# do_POST send the message only when the function finishes
-		# We must then create threads if we want to do some heavy computation
-		# 
-		# Random content
+                # If a node receives its own id in the message, it knows it has acquired leadership
+                if self.server.vessel_id == int(new_id):
+                        print "Leader election done, leader is %s with number %s" % (new_id, new_rank)
+                        self.server.is_leader = True
+                        print "I won!"
+                # Break the tie if two vessels have the same rank
+                elif int(self.server.current_leader[1]) == int(new_rank) \
+                     and self.server.vessel_id < new_id:
+                        forward_new_leader = True
+                # Else, compare the received rank with rank of current leader, and forward the new
+                # rank if it is higher than the rank of the current leader
+                elif int(self.server.current_leader[1]) < int(new_rank):
+                        self.server.current_leader = (new_id,new_rank)
+                        forward_new_leader = True
+
+                if forward_new_leader:
+                        thread = Thread(target=self.server.contact_vessel,args=\
+                                        (self.server.target_ip,\
+                                         self.path,\
+                                         new_id,\
+                                         new_rank))
+		      	thread.daemon = True
+		        thread.start()
+
+                        print "New leader is %s with number %s " %\
+                                (self.server.current_leader[0], self.server.current_leader[1] )
+
+#------------------------------------------------------------------------------------------------------
+# Propagate a received value to the network (only used by leader)
+#------------------------------------------------------------------------------------------------------
+        def propagate(self,post_data):
+                print "leader propagating value ", post_data["entry"][0]
 		thread = Thread(target=self.server.propagate_value_to_vessels,args=\
-                                (self.path,"entry",post_data["entry"][0]))
-		# We kill the process if we kill the server
+                                ("/from_leader" + self.path,\
+                                 "entry",\
+                                 post_data["entry"][0]))
 		thread.daemon = True
-		# We start the thread
 		thread.start()
-	                
+
+#------------------------------------------------------------------------------------------------------
+# If a node that isn't leader receives a message from the board, send this message to be processed
+# by the leader before making changes to the stored values for consistent data in the system.
+#------------------------------------------------------------------------------------------------------
+        def send_to_leader(self,post_data):
+                print "sending %s to leader" % (post_data["entry"][0])
+		thread = Thread(target=self.server.contact_vessel,args=\
+                                        ("10.1.0.%s" % self.server.current_leader[0],\
+                                         self.path,\
+                                         "entry",\
+                                         post_data["entry"][0]))
+		thread.daemon = True
+		thread.start()
+
+#------------------------------------------------------------------------------------------------------
+# Change the path of the packet depending on the post_data contents, unless it is a message from the
+# leader (in which case the path has already been modified prior to being received by this node).
+#------------------------------------------------------------------------------------------------------
+        def change_path(self,post_data,entry_nr):
+                if "from_leader" in self.path:
+                        return self.path
+                if "delete" in post_data:
+                        if post_data["delete"][0] == "0":
+                                return "/modify/"+entry_nr
+                        else:
+                                return "/delete/"+entry_nr
+                else:
+                        return "/add/"
+        
 #------------------------------------------------------------------------------------------------------
 # Execute the code
+#------------------------------------------------------------------------------------------------------
 if __name__ == '__main__':
 
 	## read the templates from the corresponding html files
@@ -317,8 +381,8 @@ if __name__ == '__main__':
 	# Checking the arguments
 	if len(sys.argv) != 3: # 2 args, the script and the vessel name
 		print("Arguments: vessel_ID number_of_vessels")
-	else:
-		# We need to know the vessel IP
+        else:
+                # We need to know the vessel IP
 		vessel_id = int(sys.argv[1])
 		# We need to write the other vessels IP, based on the knowledge of their number
 		for i in range(1, int(sys.argv[2])+1):
@@ -327,16 +391,10 @@ if __name__ == '__main__':
 	# We launch a server
 	server = BlackboardServer(('', PORT_NUMBER), BlackboardRequestHandler, vessel_id, vessel_list)
 	print("Starting the server on port %d" % PORT_NUMBER)
-        sleep(1)
+ 
 	try:
 		server.serve_forever()
 	except KeyboardInterrupt:
 		server.server_close()
 		print("Stopping Server")
 #------------------------------------------------------------------------------------------------------
-
-
-# Questions of TA's:
-# 1 Do we need "c" message?
-# 2 When do we call sleep?
-#
