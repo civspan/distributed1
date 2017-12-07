@@ -15,6 +15,7 @@ from httplib import HTTPConnection # Create a HTTP connection, as a client (for 
 from urllib import urlencode # Encode POST content into the HTTP header
 from codecs import open # Open a file
 from threading import  Thread # Thread Management
+import time
 
 #------------------------------------------------------------------------------------------------------
 
@@ -48,43 +49,53 @@ class BlackboardServer(HTTPServer):
                 # Logical clock of this vessel
                 self.clock = 0
                 # Todo-list
-                self.todo = {}                
+                self.todo = {}
+                self.start_time = 0
+                self.end_time = 0
                 
 #------------------------------------------------------------------------------------------------------                
 	# We add a value received to the store
 	def add_value_to_store(self, label, value):
 		# We add the value to the store
                 #print("Added value %s with label %d" % (value,self.clock))
-
                 self.store[label] = (label,value)
+                if self.start_time == 0:
+                        self.start_time = time.time()
+                self.end_time = time.time()
+                print 'Elapsed time: ',self.end_time - self.start_time
+                print 'start time: %s end time: %s' %(str(self.start_time)[8:], str(self.end_time)[8:])
 
 #------------------------------------------------------------------------------------------------------
 	# We modify a value received in the store
 	def modify_value_in_store(self,label, msg_id,value):
 		# we modify a value in the store if it exists
                 try:
-                        print("Modified stored value at index %d from %s to %s" % (label,self.store[label],value))
+                        print("Modified stored value at index %s from %s to %s" % (label,self.store[label],value))
                         self.store[label]= (msg_id,value)
                 except KeyError:
                         print("Key %d not present when modifying in vessel %d" % (label,self.vessel_id))
-
+                if self.start_time == 0:
+                        self.start_time = time.time()
+                self.end_time = time.time()
+                print 'Elapsed time: ',self.end_time - self.start_time
+                print 'start time: %s end time: %s' %(str(self.start_time)[7:], str(self.end_time)[7:])
 #------------------------------------------------------------------------------------------------------
 	# We delete a value received from the store
 	def delete_value_in_store(self,label):
 		# we delete a value in the store if it exists
 		try:
-                        print("Deleted value stored at key [%d] from store" % (label))
+                        print("Deleted value stored at key [%s] from store" % (label))
                         del self.store[label]
                 except Exception as e:
-                        print("Error while deleting key %d from vessel %d" % (label,self.vessel_id))
+                        print("Error while deleting key %s from vessel %d" % (label,self.vessel_id))
                         print(e)
+                if self.start_time == 0:
+                        self.start_time = time.time()
+                self.end_time = time.time()
+                print 'Elapsed time: ',self.end_time - self.start_time
+                print 'start time: %s end time: %s' %(str(self.start_time)[8:], str(self.end_time)[8:])
 
 #------------------------------------------------------------------------------------------------------
-        #
-        def get_current_label(self):
-                return (self.vessel_id,self.clock)
-
-        
         # Getter for the stored entries
         def get_store(self):
                 return self.store
@@ -104,14 +115,13 @@ class BlackboardServer(HTTPServer):
                 post_content = ""
                 if "add" in path:
                         post_content = urlencode({'entry' : value, 'label' : label, 'msg_id' : msg_id}) # value is (msg_id, val)
-                #elif "status" in path:
-                #        post_content = urlencode({'label': label, 'entry': value})
+                elif "status" in path:
+                        post_content = urlencode({'label': label, 'requester_id' : msg_id[0], 'replier_id' : msg_id[1], 'answer': value })
                 elif "delete" in path:
 		        post_content = urlencode({'entry' : value, 'label' : label, 'msg_id' : msg_id, "delete" : 1})
                 else:
                         post_content = urlencode({'entry' : value, 'label' : label, 'msg_id' : msg_id, "delete" : 0})
 
-                print 'I just sent msg_id: ', msg_id
                 #print post_content
 		# the HTTP header must contain the type of data we are transmitting, here URL encoded
 		headers = {"Content-type": "application/x-www-form-urlencoded"}
@@ -203,11 +213,14 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
                 # For each entry stored, create a partial html file containing
                 # information about all stored entries
                 html_entries = ""
-                tmp_store = self.server.get_store()
-                for label in tmp_store:
+                store_array = self.server.store.items()
+                
+                for item in sorted(sorted(store_array,key=lambda x:eval(x[1][0])[0]),\
+                                    key=lambda y:eval(y[1][0])[1],reverse=True) :
                         with open(entry_template) as html_file:
+                                label = item[0]
                                 tmp = html_file.read()
-                                html_entries += tmp % ("entries/"+str(label),str(label),tmp_store[label][1])
+                                html_entries += tmp % ("entries/"+str(label),str(label),self.server.store[label][1])
                 # Use the partial file from the for loop above when building upon the html document
                 with open(boardcontents_template) as html_file:
                         html_page += html_file.read() % ("Entries",html_entries)
@@ -234,8 +247,7 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
                 # not. After an operation, the path is altered in order to avoid cyclic retransmission.
                 retransmit = True
                 label = ''
-                print 'path is ', path
-                # Message is from another vessel
+                 # Message is from another vessel
                 if "receive" in path:
                         post_data['label'] = post_data['label'][0]
                         post_data['msg_id'] = post_data['msg_id'][0]
@@ -251,38 +263,38 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
                 elif 'entries' in path:
                         #get index (key) of entry from path and cast to int
                         path = path.replace('%20',' ')
-                        print 'and now path is ', path
                         result =  re.search('\([\d]+, [\d]+\)', path) 
                         label = result.group()
-                        print 'regex label is ', label
                         post_data['label'] = label
                         post_data['msg_id'] = str( (self.server.vessel_id, self.server.clock) )
-                else:
-                        print 'board and entry not in path'
-                        print 'path is ', path
                
-                print 'post data:'
-                for stuff in post_data:
-                        print '%s: %s' % (stuff, post_data[stuff])
                 # The operations are added to the path so that all clients can determine the correct
                 # action for this POST. The path combined with the POST body is used when determining
                 # the action.
 
                 # An entry is stored in post_data as such: {'entry': ['sven']}
                 # The path to add a value to index 0 is: /entries/0
-                #if "status" in path:
-                        # Check to see if the message is a status request or reply by seeing if the
-                        # label was created by this vessel
-                #        label = post_data.keys()[0]
-                #        sender_id = post_data[label][0][0]
-                #        sender_ip = "10.1.0.%d" % sender_id
-                #        if vessel_id == sender_id:
-                #                thread = Thread(target=self.server.contact_vessel,args=\
-                #                                (sender_ip,path,label,label in self.server.store)
-                #        elif label in self.server.todo:
-                #                if post_data[1] and self.server.todo[label][2] == "mod"
-                #                        self.server.add_to_store(label,label,self.server.todo[label][1])
-                #                del self.server.todo[label]
+                if "status" in path:
+                # Check to see if the message is a status request or reply by seeing if the
+                # message was created by this vessel
+                        label = post_data['label'][0]
+                        replier_id = eval(post_data['replier_id'][0])
+                        requester_id = eval(post_data['replier_id'][0])
+                        if self.server.vessel_id == replier_id:
+                                vessel_ip = '10.1.0.' + requester_id
+                                vessels = (requester_id,replier_id)
+                                answer = post_data['label'] in self.server.store
+                                thread = Thread(target=self.server.contact_vessel,args=\
+                                                (vessel_ip,label,'status-reply', vessels, answer))
+                                # We kill the process if we kill the server
+			        thread.daemon = True
+			        # We start the thread
+			        thread.start()
+                        elif label in self.server.todo:
+                                answer = eval(post_data['answer'][0])
+                                if answer and self.server.todo[label][2] == "mod":
+                                       self.server.add_value_to_store(label,self.server.todo[label][1])
+                                del self.server.todo[label]
                 if "delete" in post_data:
                         print "Deleting..."
                         label_string = str(label)
@@ -301,13 +313,15 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
                  # Not a status message - increment clock
                 if 'status' not in path and not retransmit:
                         self.increment_clock(post_data)
-         
+
+                for thing in self.server.todo:
+                        print thing + ' in todo'
+                        
 		if retransmit:
 			# do_POST send the message only when the function finishes
 			# We must then create threads if we want to do some heavy computation
 			# 
 			# Random content
-                        print 'LC has value ',self.server.clock
                         msg_id = (self.server.vessel_id, self.server.clock)
 			thread = Thread(target=self.server.propagate_value_to_vessels,args=\
                                         (path,label,msg_id,post_data["entry"][0]))
@@ -317,25 +331,30 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
 			thread.daemon = True
 			# We start the thread
 			thread.start()
-
+                
 #------------------------------------------------------------------------------------------------------
 # Handle "delete" message 
 #------------------------------------------------------------------------------------------------------
         def delete(self,post_data):
                 label = post_data['label']
                 if label in self.server.todo:
-                        print 'in delete, '+label+' in todo'
                         if self.server.todo[label][2] == 'mod':
-                                print 'mod in todo, replacing with del'
                                 self.server.todo[label][2] = 'del'
                 else:
                         print ''+label+' not in todo'
                         if label in self.server.store:
-                                print label+' deleted'
-                                del self.server.store[label]
+                                self.server.delete_value_in_store(label)
                         else:
-                                print ''+label+' added as del to todo'
                                 self.server.todo[label] = ('', '', 'del')
+                                vessels = (self.server.vessel_id, eval(post_data['msg_id'])[0])
+                                vessel_ip = '10.1.0.%d' % vessels[1]
+                                thread = Thread(target=self.server.contact_vessel,args=\
+                                                (vessel_ip,label,'status-request', vessels,'request'))
+                                # We kill the process if we kill the server
+			        thread.daemon = True
+			        # We start the thread
+			        thread.start()
+                                
                                                 
 #------------------------------------------------------------------------------------------------------
 # Handle "modify" message
@@ -345,20 +364,24 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
                 entry = post_data['entry'][0]
                 msg_id = post_data['msg_id']
                 if label in self.server.todo:
-                        print 'in modify, '+label+' in todo'
                         if self.server.todo[label][2] == 'mod':
-                                print ''+label+' in todo is mod'
-                                if is_newer(msg_id, self.server.todo[label][0]):
-                                        print ''+msg_id+' replacing old msg id'+self.server.todo[label]
+                                if self.is_newer(msg_id, self.server.todo[label][0]):
                                         self.server.todo[label][1] = entry
                 else:
-                        print ''+label+' not in todo'
                         if label in self.server.store:
-                                if is_newer(msg_id, self.server.todo[label][0]):
+                                if self.is_newer(msg_id, self.server.store[label][0]):
                                         self.server.modify_value_in_store(label,msg_id,entry)
                         else:
                                 msg_id = string_to_tuple(msg_id)
                                 self.server.todo[label] = (msg_id,entry,'mod')
+                                vessels = (self.server.vessel_id, eval(post_data['msg_id'])[0])
+                                vessel_ip = '10.1.0.%d' % vessels[1]
+                                thread = Thread(target=self.server.contact_vessel,args=\
+                                                (vessel_ip,label,'status-request', vessels,'request'))
+                                # We kill the process if we kill the server
+			        thread.daemon = True
+			        # We start the thread
+			        thread.start()
                                                 
 #------------------------------------------------------------------------------------------------------
 # Handle "add" message 
@@ -378,11 +401,18 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
 #------------------------------------------------------------------------------------------------------
         def string_to_tuple(string):
                  return eval(string)
-                                                
+
+
 #------------------------------------------------------------------------------------------------------
 # Compare two message id's and determine causality 
 #------------------------------------------------------------------------------------------------------
-        def is_newer(msg_id1, msg_id2):
+        def compare_msg_id(msg_id):
+                return eval(msg_id)[1]
+
+#------------------------------------------------------------------------------------------------------
+# Compare two message id's and determine causality 
+#------------------------------------------------------------------------------------------------------
+        def is_newer(self,msg_id1, msg_id2):
                 msg_id1 = eval(msg_id1)
                 msg_id2 = eval(msg_id2)
                 if msg_id1[1] == msg_id2[1]:
