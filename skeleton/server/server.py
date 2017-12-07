@@ -41,66 +41,77 @@ class BlackboardServer(HTTPServer):
 		HTTPServer.__init__(self,server_address, handler)
 		# we create the dictionary of values
 		self.store = {}
-		# We keep a variable of the next id to insert
-		self.current_key = -1
 		# our own ID (IP is 10.1.0.ID)
 		self.vessel_id = vessel_id
 		# The list of other vessels
 		self.vessels = vessel_list
-#------------------------------------------------------------------------------------------------------
+                # Logical clock of this vessel
+                self.clock = 0
+                # Todo-list
+                self.todo = {}                
+                
+#------------------------------------------------------------------------------------------------------                
 	# We add a value received to the store
-	def add_value_to_store(self, value):
+	def add_value_to_store(self, label, value):
 		# We add the value to the store
-                print("Added value %s with index %d" % (value,self.current_key+1))
-                self.current_key += 1
-                self.store[self.current_key] = value
+                #print("Added value %s with label %d" % (value,self.clock))
+
+                self.store[label] = (label,value)
 
 #------------------------------------------------------------------------------------------------------
 	# We modify a value received in the store
-	def modify_value_in_store(self,key,value):
+	def modify_value_in_store(self,label, msg_id,value):
 		# we modify a value in the store if it exists
                 try:
-                        print("Modified stored value at index %d from %s to %s" % (key,self.store[key],value))
-                        self.store[key]=value
+                        print("Modified stored value at index %d from %s to %s" % (label,self.store[label],value))
+                        self.store[label]= (msg_id,value)
                 except KeyError:
-                        print("Key %d not present when modifying in vessel %d" % (key,self.vessel_id))
+                        print("Key %d not present when modifying in vessel %d" % (label,self.vessel_id))
 
 #------------------------------------------------------------------------------------------------------
 	# We delete a value received from the store
-	def delete_value_in_store(self,key):
+	def delete_value_in_store(self,label):
 		# we delete a value in the store if it exists
 		try:
-                        print("Deleted value stored at key [%d] from store" % (key))
-                        del self.store[key]
+                        print("Deleted value stored at key [%d] from store" % (label))
+                        del self.store[label]
                 except Exception as e:
-                        print("Error while deleting key %d from vessel %d" % (key,self.vessel_id))
+                        print("Error while deleting key %d from vessel %d" % (label,self.vessel_id))
                         print(e)
 
 #------------------------------------------------------------------------------------------------------
+        #
+        def get_current_label(self):
+                return (self.vessel_id,self.clock)
+
+        
         # Getter for the stored entries
         def get_store(self):
                 return self.store
 
 #------------------------------------------------------------------------------------------------------
         #Getter for current index
-        def get_current_key(self):
-                return self.current_key
+        def get_clock(self):
+                return self.clock
 
 #------------------------------------------------------------------------------------------------------
 # Contact a specific vessel with a set of variables to transmit to it
-	def contact_vessel(self, vessel_ip, path, key, value):
+	def contact_vessel(self, vessel_ip, path, label, msg_id, value):
 		# the Boolean variable we will return
 		success = False
 		# The variables must be encoded in the URL format, through urllib.urlencode.
                 # The variables passed to another vessel depend on the specified path in the function call
                 post_content = ""
                 if "add" in path:
-                        post_content = urlencode({key : value})       
+                        post_content = urlencode({'entry' : value, 'label' : label, 'msg_id' : msg_id}) # value is (msg_id, val)
+                #elif "status" in path:
+                #        post_content = urlencode({'label': label, 'entry': value})
                 elif "delete" in path:
-		        post_content = urlencode({key : value, "delete" : 1})
+		        post_content = urlencode({'entry' : value, 'label' : label, 'msg_id' : msg_id, "delete" : 1})
                 else:
-                        post_content = urlencode({key : value, "delete" : 0})
-                         
+                        post_content = urlencode({'entry' : value, 'label' : label, 'msg_id' : msg_id, "delete" : 0})
+
+                print 'I just sent msg_id: ', msg_id
                 #print post_content
 		# the HTTP header must contain the type of data we are transmitting, here URL encoded
 		headers = {"Content-type": "application/x-www-form-urlencoded"}
@@ -129,15 +140,16 @@ class BlackboardServer(HTTPServer):
 		# we return if we succeeded or not
 		return success
 #------------------------------------------------------------------------------------------------------
-	# We send a received value to all the other vessels of the system
-	def propagate_value_to_vessels(self, path, key, value):
-		# We iterate through the vessel list
+# Send a received value to all the other vessels of the system
+#------------------------------------------------------------------------------------------------------
+	def propagate_value_to_vessels(self, path, label, msg_id, value):
+                # We iterate through the vessel list
 		for vessel in self.vessels:
 			# We should not send it to our own IP, or we would create an infinite loop of updates
 			if vessel != ("10.1.0.%s" % self.vessel_id):
 				# A good practice would be to try again if the request failed
 				# Here, we do it only once.
-				self.contact_vessel(vessel, path, key, value)		
+				self.contact_vessel(vessel, path, label,msg_id, value)		
 #------------------------------------------------------------------------------------------------------
 
 
@@ -191,10 +203,11 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
                 # For each entry stored, create a partial html file containing
                 # information about all stored entries
                 html_entries = ""
-                for entry in self.server.get_store():
+                tmp_store = self.server.get_store()
+                for label in tmp_store:
                         with open(entry_template) as html_file:
                                 tmp = html_file.read()
-                                html_entries += tmp % ("entries/"+str(entry),entry,self.server.get_store()[entry])
+                                html_entries += tmp % ("entries/"+str(label),str(label),tmp_store[label][1])
                 # Use the partial file from the for loop above when building upon the html document
                 with open(boardcontents_template) as html_file:
                         html_page += html_file.read() % ("Entries",html_entries)
@@ -213,52 +226,177 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
                 # Parse the post request and store it in a dict
                 post_data = self.parse_POST_request()
                 path = self.path
-
+                val = post_data['entry'][0]
+                        
+            
                 # The boolean retransmit is used to specify whether this node should propagate the
                 # post. We check the path in the header to determine whether it should retransmit or
                 # not. After an operation, the path is altered in order to avoid cyclic retransmission.
                 retransmit = True
+                label = ''
+                print 'path is ', path
+                # Message is from another vessel
                 if "receive" in path:
+                        post_data['label'] = post_data['label'][0]
+                        post_data['msg_id'] = post_data['msg_id'][0]
                         retransmit = False
-                        
+                        label = post_data['label']
+               
+                # Message is an add from this vessels board
+                if "board" in path:
+                        label = str((self.server.vessel_id,self.server.clock))
+                        post_data['label'] = label
+                        post_data['msg_id'] = label
+                # Message is a del or mod from this vessels board
+                elif 'entries' in path:
+                        #get index (key) of entry from path and cast to int
+                        path = path.replace('%20',' ')
+                        print 'and now path is ', path
+                        result =  re.search('\([\d]+, [\d]+\)', path) 
+                        label = result.group()
+                        print 'regex label is ', label
+                        post_data['label'] = label
+                        post_data['msg_id'] = str( (self.server.vessel_id, self.server.clock) )
+                else:
+                        print 'board and entry not in path'
+                        print 'path is ', path
+               
+                print 'post data:'
+                for stuff in post_data:
+                        print '%s: %s' % (stuff, post_data[stuff])
                 # The operations are added to the path so that all clients can determine the correct
                 # action for this POST. The path combined with the POST body is used when determining
                 # the action.
 
                 # An entry is stored in post_data as such: {'entry': ['sven']}
                 # The path to add a value to index 0 is: /entries/0
-                if "delete" in post_data: 
-                        #get index (key) of entry from path and cast to int
-                        result =  re.search('[\d]+', path) 
-                        key_string = result.group()
-                        key = int(key_string)
-
+                #if "status" in path:
+                        # Check to see if the message is a status request or reply by seeing if the
+                        # label was created by this vessel
+                #        label = post_data.keys()[0]
+                #        sender_id = post_data[label][0][0]
+                #        sender_ip = "10.1.0.%d" % sender_id
+                #        if vessel_id == sender_id:
+                #                thread = Thread(target=self.server.contact_vessel,args=\
+                #                                (sender_ip,path,label,label in self.server.store)
+                #        elif label in self.server.todo:
+                #                if post_data[1] and self.server.todo[label][2] == "mod"
+                #                        self.server.add_to_store(label,label,self.server.todo[label][1])
+                #                del self.server.todo[label]
+                if "delete" in post_data:
+                        print "Deleting..."
+                        label_string = str(label)
+                        label_string = label_string.replace(' ', '%20')
                         # Delete is 0 -> modify data
                         if post_data['delete'][0] == '0':
-                                path = "/receive/modify/"+key_string
-                                self.server.modify_value_in_store(key,post_data["entry"][0])
+                                path = "/receive/modify/"+label_string
+                                self.modify(post_data)
                         # Delete is 1 -> delete data
                         else:
-                                path = "/receive/delete/"+key_string
-                                self.server.delete_value_in_store(key)
+                                path = "/receive/delete/"+label_string
+                                self.delete(post_data)
                 else:
                         path = "/receive/add/"
-                        self.server.add_value_to_store(post_data["entry"][0])
-
+                        self.add(post_data)
+                 # Not a status message - increment clock
+                if 'status' not in path and not retransmit:
+                        self.increment_clock(post_data)
+         
 		if retransmit:
 			# do_POST send the message only when the function finishes
 			# We must then create threads if we want to do some heavy computation
 			# 
 			# Random content
+                        print 'LC has value ',self.server.clock
+                        msg_id = (self.server.vessel_id, self.server.clock)
 			thread = Thread(target=self.server.propagate_value_to_vessels,args=\
-                                        (path,"entry",post_data["entry"][0]))
+                                        (path,label,msg_id,post_data["entry"][0]))
+                        self.increment_clock(post_data)
+
 			# We kill the process if we kill the server
 			thread.daemon = True
 			# We start the thread
 			thread.start()
 
-
 #------------------------------------------------------------------------------------------------------
+# Handle "delete" message 
+#------------------------------------------------------------------------------------------------------
+        def delete(self,post_data):
+                label = post_data['label']
+                if label in self.server.todo:
+                        print 'in delete, '+label+' in todo'
+                        if self.server.todo[label][2] == 'mod':
+                                print 'mod in todo, replacing with del'
+                                self.server.todo[label][2] = 'del'
+                else:
+                        print ''+label+' not in todo'
+                        if label in self.server.store:
+                                print label+' deleted'
+                                del self.server.store[label]
+                        else:
+                                print ''+label+' added as del to todo'
+                                self.server.todo[label] = ('', '', 'del')
+                                                
+#------------------------------------------------------------------------------------------------------
+# Handle "modify" message
+#------------------------------------------------------------------------------------------------------
+        def modify(self,post_data):
+                label = post_data['label']
+                entry = post_data['entry'][0]
+                msg_id = post_data['msg_id']
+                if label in self.server.todo:
+                        print 'in modify, '+label+' in todo'
+                        if self.server.todo[label][2] == 'mod':
+                                print ''+label+' in todo is mod'
+                                if is_newer(msg_id, self.server.todo[label][0]):
+                                        print ''+msg_id+' replacing old msg id'+self.server.todo[label]
+                                        self.server.todo[label][1] = entry
+                else:
+                        print ''+label+' not in todo'
+                        if label in self.server.store:
+                                if is_newer(msg_id, self.server.todo[label][0]):
+                                        self.server.modify_value_in_store(label,msg_id,entry)
+                        else:
+                                msg_id = string_to_tuple(msg_id)
+                                self.server.todo[label] = (msg_id,entry,'mod')
+                                                
+#------------------------------------------------------------------------------------------------------
+# Handle "add" message 
+#------------------------------------------------------------------------------------------------------
+        def add(self,post_data):
+                label = post_data['label']
+                if label in self.server.todo:
+                        if self.server.todo[label][2] == 'mod':
+                                self.server.add_to_store(label,self.server.todo[label][1])
+                        del self.server.todo[label]
+                else:
+                        self.server.add_value_to_store(label,post_data['entry'][0]) # kolla detta för rätt värde
+                        
+              
+#------------------------------------------------------------------------------------------------------
+# Cast string of tuple to tuple of ints
+#------------------------------------------------------------------------------------------------------
+        def string_to_tuple(string):
+                 return eval(string)
+                                                
+#------------------------------------------------------------------------------------------------------
+# Compare two message id's and determine causality 
+#------------------------------------------------------------------------------------------------------
+        def is_newer(msg_id1, msg_id2):
+                msg_id1 = eval(msg_id1)
+                msg_id2 = eval(msg_id2)
+                if msg_id1[1] == msg_id2[1]:
+                        return msg_id1[0] > msg_id2[0]
+                else:
+                        return msg_id1[1] > msg_id2[1]
+                                                
+#------------------------------------------------------------------------------------------------------
+# Increment the logical clock based on the maximum of received clock and own clock
+#------------------------------------------------------------------------------------------------------
+        def increment_clock(self,post_data):
+                sender_clock = eval(post_data['msg_id'])[1]
+                self.server.clock = max(sender_clock, self.server.clock) + 1 # {entry: [ (0,0),(3,1),'sven']}
+
 #------------------------------------------------------------------------------------------------------
 # Execute the code
 if __name__ == '__main__':
