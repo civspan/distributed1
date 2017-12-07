@@ -18,6 +18,7 @@ from httplib import HTTPConnection # Create a HTTP connection, as a client (for 
 from urllib import urlencode # Encode POST content into the HTTP header
 from codecs import open # Open a file
 from threading import  Thread # Thread Management
+import time
 
 #------------------------------------------------------------------------------------------------------
 
@@ -59,6 +60,8 @@ class BlackboardServer(HTTPServer):
                 self.is_leader = False
                 # Create string of next ip for election
                 self.target_ip = "10.1.0.%s" % ((self.vessel_id % self.num_vessels) + 1)
+                self.start = 0
+                self.end = 0
                 
                 # Wait for nodes to initialize, then initiate leader election and add own results to election list
                 # Run leader election in thread so that the election can be delayed without blocking the server
@@ -77,9 +80,14 @@ class BlackboardServer(HTTPServer):
 	# We add a value received to the store
 	def add_value_to_store(self, value):
 		# We add the value to the store
-                print("Added value %s with index %d" % (value,self.current_key+1))
+
                 self.current_key += 1
                 self.store[self.current_key] = value
+                if self.start == 0:
+                        self.start = time.time()
+                self.end = time.time()
+                print 'start time: %s  |  end time: %s' %( str(self.start)[7:], str(self.end)[7:] )
+                print 'elapsed: ', self.end - self.start
 
 #------------------------------------------------------------------------------------------------------
 	# We modify a value received in the store
@@ -90,6 +98,11 @@ class BlackboardServer(HTTPServer):
                         self.store[key]=value
                 except KeyError:
                         print("Key %d not present when modifying in vessel %d" % (key,self.vessel_id))
+                if self.start == 0:
+                        self.start = time.time()
+                self.end = time.time()
+                print 'start time: %s  |  end time: %s' %( str(self.start)[7:], str(self.end)[7:] )
+                print 'elapsed: ', self.end - self.start
 
 #------------------------------------------------------------------------------------------------------
 	# We delete a value received from the store
@@ -101,7 +114,12 @@ class BlackboardServer(HTTPServer):
                 except Exception as e:
                         print("Error while deleting key %d from vessel %d" % (key,self.vessel_id))
                         print(e)
-
+                if self.start == 0:
+                        self.start = time.time()
+                self.end = time.time()
+                print 'start time: %s  |  end time: %s' %( str(self.start)[7:], str(self.end)[7:] )
+                print 'elapsed: ', self.end - self.start
+                        
 #------------------------------------------------------------------------------------------------------
 # Contact a specific vessel with a set of variables to transmit to it
 	def contact_vessel(self, vessel_ip, path, key, value):                
@@ -331,7 +349,7 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
 # Propagate a received value to the network (only used by leader)
 #------------------------------------------------------------------------------------------------------
         def propagate(self,post_data):
-                print "leader propagating value ", post_data["entry"][0]
+
 		thread = Thread(target=self.server.propagate_value_to_vessels,args=\
                                 ("/from_leader" + self.path,\
                                  "entry",\
@@ -344,7 +362,7 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
 # by the leader before making changes to the stored values for consistent data in the system.
 #------------------------------------------------------------------------------------------------------
         def send_to_leader(self,post_data):
-                print "sending %s to leader" % (post_data["entry"][0])
+
 		thread = Thread(target=self.server.contact_vessel,args=\
                                         ("10.1.0.%s" % self.server.current_leader[0],\
                                          self.path,\
