@@ -1,5 +1,0 @@
-
-# If there are a huge number of nodes in the ring, you could theoretically send messages before all
-# nodes agree on a leader. To fix this with a "c" is also a lackluster solution, as a user may be
-# prevented to send a message during the leader election. A better solution would be to only accept a
-# message if you are the leader
