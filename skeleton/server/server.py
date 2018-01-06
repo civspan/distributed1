@@ -15,14 +15,14 @@ from httplib import HTTPConnection # Create a HTTP connection, as a client (for 
 from urllib import urlencode # Encode POST content into the HTTP header
 from codecs import open # Open a file
 from threading import  Thread # Thread Management
+import byzantine_behavior
 
 #------------------------------------------------------------------------------------------------------
 
 # Global variables for HTML templates
-board_frontpage_footer_template = "server/board_frontpage_footer_template.html"
-board_frontpage_header_template = "server/board_frontpage_header_template.html"
-boardcontents_template = "server/boardcontents_template.html"
-entry_template = "server/entry_template.html"
+vote_frontpage_template = "server/vote_frontpage_template.html"
+vote_result_template = "server/vote_result_template.html"
+
 
 #------------------------------------------------------------------------------------------------------
 # Static variables definitions
@@ -39,52 +39,16 @@ class BlackboardServer(HTTPServer):
 	def __init__(self, server_address, handler, node_id, vessel_list):
 	# We call the super init
 		HTTPServer.__init__(self,server_address, handler)
-		# we create the dictionary of values
-		self.store = {}
-		# We keep a variable of the next id to insert
-		self.current_key = -1
 		# our own ID (IP is 10.1.0.ID)
 		self.vessel_id = vessel_id
 		# The list of other vessels
 		self.vessels = vessel_list
-#------------------------------------------------------------------------------------------------------
-	# We add a value received to the store
-	def add_value_to_store(self, value):
-		# We add the value to the store
-                print("Added value %s with index %d" % (value,self.current_key+1))
-                self.current_key += 1
-                self.store[self.current_key] = value
-
-#------------------------------------------------------------------------------------------------------
-	# We modify a value received in the store
-	def modify_value_in_store(self,key,value):
-		# we modify a value in the store if it exists
-                try:
-                        print("Modified stored value at index %d from %s to %s" % (key,self.store[key],value))
-                        self.store[key]=value
-                except KeyError:
-                        print("Key %d not present when modifying in vessel %d" % (key,self.vessel_id))
-
-#------------------------------------------------------------------------------------------------------
-	# We delete a value received from the store
-	def delete_value_in_store(self,key):
-		# we delete a value in the store if it exists
-		try:
-                        print("Deleted value stored at key [%d] from store" % (key))
-                        del self.store[key]
-                except Exception as e:
-                        print("Error while deleting key %d from vessel %d" % (key,self.vessel_id))
-                        print(e)
-
-#------------------------------------------------------------------------------------------------------
-        # Getter for the stored entries
-        def get_store(self):
-                return self.store
-
-#------------------------------------------------------------------------------------------------------
-        #Getter for current index
-        def get_current_key(self):
-                return self.current_key
+                # Bool that indicates the tie-break
+                self.tiebreak = True
+                # Vote vector
+                self.votes = {}
+                # Bool indicating if the vessel is honest or byzantine
+                self.byzantine = False
 
 #------------------------------------------------------------------------------------------------------
 # Contact a specific vessel with a set of variables to transmit to it
@@ -94,15 +58,14 @@ class BlackboardServer(HTTPServer):
 		# The variables must be encoded in the URL format, through urllib.urlencode.
                 # The variables passed to another vessel depend on the specified path in the function call
                 post_content = ""
-                if "add" in path:
-                        post_content = urlencode({key : value})       
-                elif "delete" in path:
-		        post_content = urlencode({key : value, "delete" : 1})
-                else:
+                if "attack" or "retreat" in path:
+                        post_content = urlencode({"sender" : self.vessel_id}) 
+                elif "byzantine" in path:
                         post_content = urlencode({key : value, "delete" : 0})
-                         
-                #print post_content
-		# the HTTP header must contain the type of data we are transmitting, here URL encoded
+                else:
+                        pass
+
+                # the HTTP header must contain the type of data we are transmitting, here URL encoded
 		headers = {"Content-type": "application/x-www-form-urlencoded"}
 		# We should try to catch errors when contacting the vessel
 		try:
@@ -139,11 +102,27 @@ class BlackboardServer(HTTPServer):
 				# Here, we do it only once.
 				self.contact_vessel(vessel, path, key, value)		
 #------------------------------------------------------------------------------------------------------
-
-
-
-
-
+        def propagate_byzantine_values(self):
+                byzantine_votes = byzantine_behavior.compute_byzantine_vote_round1\
+                                        (len(self.vessels)-1,
+                                         len(self.vessels),
+                                         self.tiebreak)
+                i = 1
+		# We iterate through the honest vessels
+		for vote in byzantine_votes:
+                        path = ""
+                        if vote:
+                                path = "/vote/attack/receive/"
+                        else:
+                                path = "/vote/retreat/receive/"
+			# We should not send it to our own IP, or we would create an infinite loop of updates
+                        # TODO? More than one byzantine
+			vessel = "10.1.0.%s" % i
+                        # A good practice would be to try again if the request failed
+			# Here, we do it only once.
+			self.contact_vessel(vessel, path, 0, 0)
+                        i += 1
+                        
 
 
 #------------------------------------------------------------------------------------------------------
@@ -186,21 +165,11 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
                 # Build the complete html document piece by piece
                 html_page = ""
                 # Board header
-	        with open(board_frontpage_header_template) as html_file:
+	        with open(vote_frontpage_template) as html_file:
                         html_page = html_file.read()
-                # For each entry stored, create a partial html file containing
-                # information about all stored entries
-                html_entries = ""
-                for entry in self.server.get_store():
-                        with open(entry_template) as html_file:
-                                tmp = html_file.read()
-                                html_entries += tmp % ("entries/"+str(entry),entry,self.server.get_store()[entry])
-                # Use the partial file from the for loop above when building upon the html document
-                with open(boardcontents_template) as html_file:
-                        html_page += html_file.read() % ("Entries",html_entries)
-                # Board footer
-                with open(board_frontpage_footer_template) as html_file:
-                        html_page += html_file.read()
+               
+                               # html_entries += tmp % ("entries/"+str(entry),entry,self.server.get_store()[entry])
+                print html_page
                 # HTML file is completed
                 self.wfile.write(html_page)
 
@@ -214,49 +183,55 @@ class BlackboardRequestHandler(BaseHTTPRequestHandler):
                 post_data = self.parse_POST_request()
                 path = self.path
 
+                
+
                 # The boolean retransmit is used to specify whether this node should propagate the
                 # post. We check the path in the header to determine whether it should retransmit or
                 # not. After an operation, the path is altered in order to avoid cyclic retransmission.
-                retransmit = True
-                if "receive" in path:
-                        retransmit = False
-                        
-                # The operations are added to the path so that all clients can determine the correct
-                # action for this POST. The path combined with the POST body is used when determining
-                # the action.
+                retransmit = False
 
-                # An entry is stored in post_data as such: {'entry': ['sven']}
-                # The path to add a value to index 0 is: /entries/0
-                if "delete" in post_data: 
-                        #get index (key) of entry from path and cast to int
-                        result =  re.search('[\d]+', path) 
-                        key_string = result.group()
-                        key = int(key_string)
-
-                        # Delete is 0 -> modify data
-                        if post_data['delete'][0] == '0':
-                                path = "/receive/modify/"+key_string
-                                self.server.modify_value_in_store(key,post_data["entry"][0])
-                        # Delete is 1 -> delete data
+                # Received message from the board
+                if "receive" not in path:
+                        # Byzantine node
+                        if "byzantine" in path:
+                                self.server.byzantine = True
+                                thread = Thread(target=self.server.propagate_byzantine_values,args=\
+                                                (path,0,0))
+                                # We kill the process if we kill the server
+		                thread.daemon = True
+		                # We start the thread
+                                thread.start()
+                        # Else, the honest node received an attack or retreat from the board
                         else:
-                                path = "/receive/delete/"+key_string
-                                self.server.delete_value_in_store(key)
+                                retransmit = True
+                                self.path += "/receive/"
+                # Received retransmission from other node
                 else:
-                        path = "/receive/add/"
-                        self.server.add_value_to_store(post_data["entry"][0])
+                        # Phase 1
+                        if self.server.byzantine:
+                                pass
+                        elif "vote" in path:
+                                vote = False
+                                if "attack" in path:
+                                        vote = True                                        
+                                self.server.votes[post_data["sender"][0]] = vote
+                                # Bygg upp resultatvektor tills vektorn är n-1 stor
+                                # Beräkna och skriv ut resultatet
+                        # Phase 2
+                        else:
+                                pass
 
 		if retransmit:
 			# do_POST send the message only when the function finishes
 			# We must then create threads if we want to do some heavy computation
 			# 
 			# Random content
-			thread = Thread(target=self.server.propagate_value_to_vessels,args=\
-                                        (path,"entry",post_data["entry"][0]))
+			thread = Thread(target=self.server.propagate_value_to_vessels)
 			# We kill the process if we kill the server
 			thread.daemon = True
 			# We start the thread
 			thread.start()
-
+	
 
 #------------------------------------------------------------------------------------------------------
 #------------------------------------------------------------------------------------------------------
